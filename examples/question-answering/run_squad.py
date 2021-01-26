@@ -29,6 +29,8 @@ from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
 
+import extend_profiler
+
 import transformers
 from transformers import (
     MODEL_FOR_QUESTION_ANSWERING_MAPPING,
@@ -54,6 +56,7 @@ try:
 except ImportError:
     from tensorboardX import SummaryWriter
 
+import pcl_bert
 
 logger = logging.getLogger(__name__)
 
@@ -170,14 +173,18 @@ def train(args, train_dataset, model, tokenizer):
     set_seed(args)
 
     for _ in train_iterator:
+        #epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=True) #args.local_rank not in [-1, 0])
         epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0])
+        end_time = timeit.default_timer()
         for step, batch in enumerate(epoch_iterator):
-
+          record_shapes = False
+          with torch.autograd.profiler.profile(enabled=args.profile, record_shapes=record_shapes) as prof:
             # Skip past any already trained steps if resuming training
             if steps_trained_in_current_epoch > 0:
                 steps_trained_in_current_epoch -= 1
                 continue
 
+            start_fwd_time = timeit.default_timer()
             model.train()
             batch = tuple(t.to(args.device) for t in batch)
 
@@ -210,13 +217,17 @@ def train(args, train_dataset, model, tokenizer):
             if args.gradient_accumulation_steps > 1:
                 loss = loss / args.gradient_accumulation_steps
 
+            start_bwd_time = timeit.default_timer()
             if args.fp16:
                 with amp.scale_loss(loss, optimizer) as scaled_loss:
                     scaled_loss.backward()
             else:
                 loss.backward()
 
-            tr_loss += loss.item()
+            #tr_loss += loss.item()
+            step_loss = loss.item()
+            tr_loss += step_loss
+            start_opt_time = timeit.default_timer()
             if (step + 1) % args.gradient_accumulation_steps == 0:
                 if args.fp16:
                     torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), args.max_grad_norm)
@@ -254,9 +265,26 @@ def train(args, train_dataset, model, tokenizer):
                     torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
                     logger.info("Saving optimizer and scheduler states to %s", output_dir)
 
+            data_time = start_fwd_time - end_time
+            end_time = timeit.default_timer()
+            print(f"Step: {global_step-1}, loss: {step_loss:6g}  tr_loss: {tr_loss/(global_step-1):6g} DT: {data_time*1e3:6g} FT: {(start_bwd_time-start_fwd_time)*1e3:6g} BT: {(start_opt_time-start_bwd_time)*1e3:6g} OT: {(end_time-start_opt_time)*1e3:6g} TT: {(end_time-start_fwd_time+data_time)*1e3:6g}")
             if args.max_steps > 0 and global_step > args.max_steps:
                 epoch_iterator.close()
                 break
+          if prof:
+            file_prefix = "squad_time"
+            with open("%s.prof" % file_prefix, "w") as prof_f:
+              prof_f.write(prof.key_averages(group_by_input_shape=record_shapes).table(sort_by="cpu_time_total"))
+            if extend_profiler:
+           # try:
+              with open("%s.nested.prof" % file_prefix, "w") as prof_f:
+                prof_f.write(prof.nested_key_averages().table(sort_by="cpu_time_total"))
+              with open("%s.top_level.prof" % file_prefix, "w") as prof_f:
+                prof_f.write(prof.nested_key_averages(only_top_level=True).table(sort_by="cpu_time_total"))
+              extend_profiler.print_op_timings(prof, prefix=file_prefix)
+            #except:
+              pass
+            end_time = timeit.default_timer()
         if args.max_steps > 0 and global_step > args.max_steps:
             train_iterator.close()
             break
@@ -634,6 +662,9 @@ def main():
         help="Evaluate all checkpoints starting with the same prefix as model_name ending and ending with step number",
     )
     parser.add_argument("--no_cuda", action="store_true", help="Whether not to use CUDA when available")
+    parser.add_argument("--profile", action="store_true", help="Whether to use PCL Fused impl when available")
+    parser.add_argument("--use_pcl", action="store_true", help="Whether to use PCL Fused impl when available")
+    parser.add_argument("--pcl_bf16", action="store_true", help="Whether to use PCL Fused impl when available")
     parser.add_argument(
         "--overwrite_output_dir", action="store_true", help="Overwrite the content of the output directory"
     )
@@ -738,12 +769,13 @@ def main():
         cache_dir=args.cache_dir if args.cache_dir else None,
         use_fast=False,  # SquadDataset is not compatible with Fast tokenizers which have a smarter overflow handeling
     )
-    model = AutoModelForQuestionAnswering.from_pretrained(
-        args.model_name_or_path,
-        from_tf=bool(".ckpt" in args.model_name_or_path),
-        config=config,
-        cache_dir=args.cache_dir if args.cache_dir else None,
-    )
+    with pcl_bert.pcl_impl(args.use_pcl, args.pcl_bf16):
+        model = AutoModelForQuestionAnswering.from_pretrained(
+            args.model_name_or_path,
+            from_tf=bool(".ckpt" in args.model_name_or_path),
+            config=config,
+            cache_dir=args.cache_dir if args.cache_dir else None,
+        )
 
     if args.local_rank == 0:
         # Make sure only the first process in distributed training will download model & vocab
