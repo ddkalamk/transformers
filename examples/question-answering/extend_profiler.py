@@ -19,14 +19,17 @@ class FunctionEventAvgNested(FormattedTimesMixin):
         self.self_cpu_memory_usage = 0
         self.self_cuda_memory_usage = 0
 
-        self.self_cuda_time_total = 0
-        self.stack = None
-        self.scope = None
-        self.cpu_children = None
-        self.cpu_parent = None
-        #self.device_type = DeviceType.CPU
-        #self.is_legacy = False
-        #self.flops = 0.0
+        try:
+            self.self_cuda_time_total = 0
+            self.stack = None
+            self.scope = None
+            self.cpu_children = None
+            self.cpu_parent = None
+            #self.device_type = DeviceType.CPU
+            #self.is_legacy = False
+            #self.flops = 0.0
+        except:
+            pass
 
     def add(self, other):
         if self.key is None:
@@ -35,14 +38,17 @@ class FunctionEventAvgNested(FormattedTimesMixin):
             self.is_async = other.is_async
             self.is_remote = other.is_remote
 
-            self.cpu_parent = other.cpu_parent
-            self.cpu_children = other.cpu_children
+            try:
+                self.cpu_parent = other.cpu_parent
+                self.cpu_children = other.cpu_children
 
-            self.input_shapes = other.input_shapes
-            self.stack = other.stack
-            self.scope = other.scope
-            #self.device_type = other.device_type
-            #self.is_legacy = other.is_legacy
+                self.input_shapes = other.input_shapes
+                self.stack = other.stack
+                self.scope = other.scope
+                #self.device_type = other.device_type
+                #self.is_legacy = other.is_legacy
+            except:
+                pass
 
         assert isinstance(other, FunctionEvent)
         assert other.nested_key == self.key
@@ -54,11 +60,14 @@ class FunctionEventAvgNested(FormattedTimesMixin):
         self.self_cpu_memory_usage += other.self_cpu_memory_usage
         self.self_cuda_memory_usage += other.self_cuda_memory_usage
         self.count += other.count
-        self.self_cuda_time_total += other.self_cuda_time_total
-        #if self.flops is None:
-        #    self.flops = other.flops
-        #elif other.flops is not None:
-        #    self.flops += other.flops
+        try:
+            self.self_cuda_time_total += other.self_cuda_time_total
+            #if self.flops is None:
+            #    self.flops = other.flops
+            #elif other.flops is not None:
+            #    self.flops += other.flops
+        except:
+            pass
         return self
 
     def __iadd__(self, other):
