@@ -31,6 +31,11 @@ from tqdm import tqdm, trange
 
 import extend_profiler
 
+try:
+    import torch_ccl
+except ImportError as e:
+    torch_ccl = False
+
 import transformers
 from transformers import (
     MODEL_FOR_QUESTION_ANSWERING_MAPPING,
@@ -127,9 +132,14 @@ def train(args, train_dataset, model, tokenizer):
 
     # Distributed training (should be after apex fp16 initialization)
     if args.local_rank != -1:
-        model = torch.nn.parallel.DistributedDataParallel(
-            model, device_ids=[args.local_rank], output_device=args.local_rank, find_unused_parameters=True
-        )
+        if args.n_gpu == 0:
+            model = torch.nn.parallel.DistributedDataParallel(
+                model, find_unused_parameters=True
+            )
+        else:
+            model = torch.nn.parallel.DistributedDataParallel(
+                model, device_ids=[args.local_rank], output_device=args.local_rank, find_unused_parameters=True
+            )
 
     # Train!
     logger.info("***** Running training *****")
@@ -173,8 +183,8 @@ def train(args, train_dataset, model, tokenizer):
     set_seed(args)
 
     for _ in train_iterator:
-        #epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=True) #args.local_rank not in [-1, 0])
-        epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0])
+        epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=True) #args.local_rank not in [-1, 0])
+        #epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0])
         end_time = timeit.default_timer()
         for step, batch in enumerate(epoch_iterator):
           record_shapes = False
@@ -267,7 +277,7 @@ def train(args, train_dataset, model, tokenizer):
 
             data_time = start_fwd_time - end_time
             end_time = timeit.default_timer()
-            print(f"Step: {global_step-1}, loss: {step_loss:6g}  tr_loss: {tr_loss/(global_step-1):6g} DT: {data_time*1e3:6g} FT: {(start_bwd_time-start_fwd_time)*1e3:6g} BT: {(start_opt_time-start_bwd_time)*1e3:6g} OT: {(end_time-start_opt_time)*1e3:6g} TT: {(end_time-start_fwd_time+data_time)*1e3:6g}")
+            if args.local_rank in [-1, 0]: print(f"Step: {global_step-1}, loss: {step_loss:6g}  tr_loss: {tr_loss/(global_step-1):6g} DT: {data_time*1e3:6g} FT: {(start_bwd_time-start_fwd_time)*1e3:6g} BT: {(start_opt_time-start_bwd_time)*1e3:6g} OT: {(end_time-start_opt_time)*1e3:6g} TT: {(end_time-start_fwd_time+data_time)*1e3:6g}")
             if args.max_steps > 0 and global_step > args.max_steps:
                 epoch_iterator.close()
                 break
@@ -721,7 +731,15 @@ def main():
         ptvsd.wait_for_attach()
 
     # Setup CUDA, GPU & distributed training
-    if args.local_rank == -1 or args.no_cuda:
+    if torch_ccl and int(os.environ.get('PMI_SIZE', '0')) > 1:
+        os.environ['RANK'] = os.environ.get('PMI_RANK', '0')
+        os.environ['WORLD_SIZE'] = os.environ.get('PMI_SIZE', '1')
+        torch.distributed.init_process_group(backend="ccl")
+        device = torch.device("cpu")
+        args.n_gpu = 0
+        args.local_rank = torch.distributed.get_rank()
+        print("Using CCL dist run")
+    elif args.local_rank == -1 or args.no_cuda:
         device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
         args.n_gpu = 0 if args.no_cuda else torch.cuda.device_count()
     else:  # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
@@ -776,6 +794,9 @@ def main():
             config=config,
             cache_dir=args.cache_dir if args.cache_dir else None,
         )
+
+    for m in model.modules():
+        if hasattr(m, "maybe_block_params"): m.maybe_block_params()
 
     if args.local_rank == 0:
         # Make sure only the first process in distributed training will download model & vocab
