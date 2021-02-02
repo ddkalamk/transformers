@@ -194,6 +194,7 @@ def train(args, train_dataset, model, tokenizer):
                 steps_trained_in_current_epoch -= 1
                 continue
 
+            if prof: pcl_bert.reset_debug_timers()
             start_fwd_time = timeit.default_timer()
             model.train()
             batch = tuple(t.to(args.device) for t in batch)
@@ -278,11 +279,12 @@ def train(args, train_dataset, model, tokenizer):
             data_time = start_fwd_time - end_time
             end_time = timeit.default_timer()
             if args.local_rank in [-1, 0]: print(f"Step: {global_step-1}, loss: {step_loss:6g}  tr_loss: {tr_loss/(global_step-1):6g} DT: {data_time*1e3:6g} FT: {(start_bwd_time-start_fwd_time)*1e3:6g} BT: {(start_opt_time-start_bwd_time)*1e3:6g} OT: {(end_time-start_opt_time)*1e3:6g} TT: {(end_time-start_fwd_time+data_time)*1e3:6g}")
+            if prof: pcl_bert.print_debug_timers()
             if args.max_steps > 0 and global_step > args.max_steps:
                 epoch_iterator.close()
                 break
           if prof:
-            file_prefix = "squad_time"
+            file_prefix = "squad_time%s" % ("_r%d" % args.local_rank if args.local_rank >= 0 else "")
             with open("%s.prof" % file_prefix, "w") as prof_f:
               prof_f.write(prof.key_averages(group_by_input_shape=record_shapes).table(sort_by="cpu_time_total"))
             if extend_profiler:
