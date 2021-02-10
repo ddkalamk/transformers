@@ -290,7 +290,8 @@ def train(args, train_dataset, model, tokenizer):
             if extend_profiler:
            # try:
               with open("%s.nested.prof" % file_prefix, "w") as prof_f:
-                prof_f.write(prof.nested_key_averages().table(sort_by="cpu_time_total"))
+                #prof_f.write(prof.nested_key_averages().table(sort_by="cpu_time_total"))
+                prof_f.write(prof.nested_key_averages().table(sort_by=None, row_limit=1000))
               with open("%s.top_level.prof" % file_prefix, "w") as prof_f:
                 prof_f.write(prof.nested_key_averages(only_top_level=True).table(sort_by="cpu_time_total"))
               extend_profiler.print_op_timings(prof, prefix=file_prefix)

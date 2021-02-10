@@ -92,6 +92,30 @@ def el_nested_key_averages(self, only_top_level):
     if only_top_level:
         for evt in stats.values():
             evt.self_cpu_time_total = evt.cpu_time_total
+        return EventList(stats.values())
+    else:
+        top_level_stats = []
+        child_list = defaultdict(list)
+        for evt in stats.values():
+            nested_keys = evt.key.split(".")
+            if len(nested_keys) == 1:
+                top_level_stats.append(evt)
+            else:
+                parent = ".".join(nested_keys[:-1])
+                child_list[parent].append(evt)
+            
+        top_level_stats = sorted(top_level_stats, key=lambda evt: getattr(evt, "cpu_time_total"), reverse=True)
+        for evt in stats.values():
+            evt.children = list(sorted(child_list[evt.key], key=lambda evt1: getattr(evt1, "cpu_time_total"), reverse=True))
+        def traverse(lst, evt):
+            lst.append(evt)
+            for e in evt.children:
+                traverse(lst, e)
+        lst = []
+        for evt in top_level_stats:
+            traverse(lst, evt)
+        return EventList(lst)
+        
         # for evt in self:
         #     if not evt.cuda_time: continue
         #     parent = getattr(evt, "parent", None)
