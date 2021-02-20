@@ -190,8 +190,8 @@ def train(args, train_dataset, model, tokenizer):
         #epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0])
         end_time = timeit.default_timer()
         for step, batch in enumerate(epoch_iterator):
-          record_shapes = False
-          with torch.autograd.profiler.profile(enabled=args.profile, record_shapes=record_shapes) as prof:
+          record_shapes = True
+          with torch.autograd.profiler.profile(enabled=args.profile, use_cuda=(args.n_gpu > 0), record_shapes=record_shapes) as prof:
             # Skip past any already trained steps if resuming training
             if steps_trained_in_current_epoch > 0:
                 steps_trained_in_current_epoch -= 1
@@ -252,7 +252,8 @@ def train(args, train_dataset, model, tokenizer):
                 with torch.autograd.profiler.record_function("optimizer"):
                     optimizer.step()
                     scheduler.step()  # Update learning rate schedule
-                    model.zero_grad()
+                    #model.zero_grad()
+                    for p in model.parameters(): p.grad = None
                 global_step += 1
 
                 # Log metrics
@@ -804,7 +805,9 @@ def main():
         )
 
     for m in model.modules():
-        if hasattr(m, "maybe_block_params"): m.maybe_block_params()
+        if hasattr(m, "maybe_block_params"):
+            m.maybe_block_params()
+            #if args.pcl_bf16: m.to(torch.bfloat16)
 
     if args.local_rank == 0:
         # Make sure only the first process in distributed training will download model & vocab
@@ -873,7 +876,8 @@ def main():
         for checkpoint in checkpoints:
             # Reload the model
             global_step = checkpoint.split("-")[-1] if len(checkpoints) > 1 else ""
-            model = AutoModelForQuestionAnswering.from_pretrained(checkpoint)  # , force_download=True)
+            with pcl_bert.pcl_impl(args.use_pcl, args.pcl_bf16):
+                model = AutoModelForQuestionAnswering.from_pretrained(checkpoint)  # , force_download=True)
             model.to(args.device)
 
             # Evaluate
