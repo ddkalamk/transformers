@@ -247,6 +247,8 @@ def train(args, train_dataset, model, tokenizer):
                 with torch.autograd.profiler.record_function("clip_grad_norm"):
                     if args.fp16:
                         torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), args.max_grad_norm)
+                    elif args.use_pcl and args.pcl_bf16:
+                        pcl_bert.clip_grad_norm_(model.parameters(), args.max_grad_norm)
                     else:
                         torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
 
